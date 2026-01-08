@@ -5,10 +5,10 @@ from pathlib import Path
 from enum import Enum
 
 def vec2(r):
-    return (r.f32(), r.f32())
+    return r.f32(), r.f32()
 
 def vec3(r):
-    return (r.f32(), r.f32(), r.f32())
+    return r.f32(), r.f32(), r.f32()
 
 def sphere(r):
     return {
@@ -27,6 +27,14 @@ class ESecondaryMotionObjectType(Enum):
     Cloth = 0
     Chain = 1
     Jiggle = 2
+
+class ESecondaryMotionSpringType(Enum):
+    StructuralMisc = 0
+    StructuralVertical = 1
+    StructuralHorizontal = 2
+    ShearDiagonal = 3
+    Bend = 4
+    BendVertical = 5
 
 def read_header(r):
     return {
@@ -57,11 +65,14 @@ def read_geom_params(r):
 
     out["meshDecompression"] = {
         "positionMin": r.f32(),
-        "positionRange": r.f32()
+        "positionRange": r.f32(),
+        "LocalHeight": r.f32(),
     }
 
-    out["uvDecompression"] = vec2(r)
-    out["unk5"] = r.f32()
+    out["uvDecompression"] = {
+        "UVDecompressionXY": r.f32(),
+        "UVDecompressionZW": r.f32(),
+    }
     out["unk6"] = r.f32()
 
     out["boundingSphere"] = sphere(r)
@@ -177,7 +188,7 @@ def read_reflex(r):
 def read_smos(r):
     secondary_motion_objects = []
     count = r.u32()
-    for _ in range(1):
+    for _ in range(count):
         simulation_parameters = {
             "gravity": vec3(r),
             "verticalStiffness": r.f32(),
@@ -320,24 +331,145 @@ def read_smos(r):
             }
             teleport_parent_bones["teleportParentBones"].append(teleport_parent_bone)
 
+        triangles_descs = {
+            "triangleDesc" : [],
+        }
+        triangleDescCount = r.u32()
+        triangles_descs["triangleDescCount"] = triangleDescCount
+        for _ in range(triangleDescCount):
+            triangles_desc = {
+                "index1": r.u16(),
+                "index2": r.u16(),
+                "index3": r.u16(),
+            }
+            triangles_descs["triangleDesc"].append(triangles_desc)
+        r.align(4)
+
+        connectivities = {
+            "neighbor": [],
+        }
+        connectivityCount = r.u32()
+        connectivities["connectivityCount"] = connectivityCount
+        for _ in range(connectivityCount):
+            connectivities["neighbor"].append(r.u16())
+        # align 4 because it's ushort read
+        # r.align(4)
+
+        spring_descs = {
+            "spring": [],
+        }
+        springCount = r.u32()
+        spring_descs["springCount"] = springCount
+        for _ in range(springCount):
+            spring_desc = {
+                "index1": r.u16(),
+                "index2": r.u16(),
+                "springType": ESecondaryMotionSpringType(r.u16()),
+            }
+            spring_descs["spring"].append(spring_desc)
+
         secondary_motion_object = {
             "simulationParameters" : simulation_parameters,
             "collisionPrimitiveCollectionDescription" : collision_primitive_collection_description,
             "limitCollectionDescription" : limit_collection_description,
             "particles" : particles,
             "teleportParentBones" : teleport_parent_bones,
+            "connectivities" : connectivities,
+            "springs" : spring_descs,
+            "numStructuralVerticalSprings" : r.u16(),
+            "isHandInPocketCompatible" : r.u16(),
         }
         secondary_motion_objects.append(secondary_motion_object)
+        r.align(4)
 
     return {"secondaryMotionObject": secondary_motion_objects}
+
+def read_procedural_nodes(r):
+    procedural_nodes = {
+        "node": [],
+    }
+
+    nodeCount = r.u32()
+    procedural_nodes["nodeCount"] = nodeCount
+
+    for _ in range(nodeCount):
+        node = {
+            "boneIndex": r.u16(),
+            "proceduralNodeType": r.u8(),
+        }
+        r.skip(1)
+
+        # switch (m_eProceduralNodeType)
+        if node["proceduralNodeType"] == 1:
+            node["t1_unk1"] = r.u32()
+            node["t1_unk2"] = r.f32()
+            node["t1_unk3"] = r.u32()
+            node["t1_unk4"] = r.f32()
+
+        elif node["proceduralNodeType"] == 2:
+            node["t2_unk1"] = r.u32()
+            node["t2_unk2"] = r.f32()
+
+        elif node["proceduralNodeType"] == 3:
+            node["t3_unk1"] = r.u32()
+            node["t3_unk2"] = r.u32()
+            node["t3_unk3"] = r.f32()
+
+        elif node["proceduralNodeType"] == 5:
+            node["t5_unk1"] = r.u32()
+            node["t5_unk2"] = r.u32()
+            node["t5_unk3"] = r.f32()
+            node["t5_unk4"] = r.f32()
+            node["t5_unk5"] = r.f32()
+            node["t5_unk6"] = r.f32()
+            node["t5_unk7"] = r.f32()
+            node["t5_unk8"] = r.f32()
+            node["t5_unk9"] = r.f32()
+
+        elif node["proceduralNodeType"] == 6:
+            node["t6_unk1"] = r.u32()
+            node["t6_unk2"] = r.u32()
+            node["t6_unk3"] = r.u32()
+            node["t6_unk4"] = r.u32()
+            node["t6_unk5"] = r.u32()
+
+        procedural_nodes["node"].append(node)
+
+    return procedural_nodes
+
+def read_basic_draw_call_range(r):
+    return {
+        "vertexBufferByteOffset": r.u32(),
+        "primitiveCount": r.u32(),
+        "indexCount": r.u32(),
+        "indexBufferStartIndex": r.u32(),
+        "vertexCount": r.u16(),
+        "minIndexValue": r.u16(),
+        "maxIndexValue": r.u16(),
+        "groupCount": r.u16(),
+    }
+
+
+def read_draw_call_range(r):
+    draw_call = {
+        "drawCall": read_basic_draw_call_range(r),
+        "boundingSphere": sphere(r),
+        "bboxMin": vec3(r),
+        "bboxMax": vec3(r),
+        "name": read_string_block(r, 4)
+    }
+    draw_call["visibilityBitIndex"] = r.u16()
+    draw_call["attachedBoneIndex"] = r.u16()
+    return draw_call
+
 
 def read_scene_meshes(r, lod_count):
     lods = []
     for _ in range(lod_count):
         meshes = []
-        mesh_count = r.u32()
-        for _ in range(mesh_count):
-            meshes.append({
+        numCSceneMesh = r.u32()
+        for _ in range(numCSceneMesh):
+            mesh = {
                 "boundingSphere": sphere(r),
                 "bboxMin": vec3(r),
                 "bboxMax": vec3(r),
@@ -348,32 +480,65 @@ def read_scene_meshes(r, lod_count):
                 "unk9": r.u8(),
                 "unk10": r.u16(),
                 "boneMapIndex": r.u32(),
-            })
-            # merged draw range
-            #r.skip(32)
-            range_count = r.u32()
-            #r.skip(8)
-            #for _ in range(range_count):
-                #r.skip(96)
+            }
+            mesh["Point"] = mesh["fvf"] & 0x1
+            mesh["PointComp"] = (mesh["fvf"] & 0x2) >> 1
+            mesh["UV"] = (mesh["fvf"] & 0x4) >> 2
+            mesh["UVComp1"] = (mesh["fvf"] & 0x8) >> 3
+            mesh["Skin"] = (mesh["fvf"] & 0x10) >> 4
+            mesh["SkinExtra"] = (mesh["fvf"] & 0x20) >> 5
+            mesh["SkinRigid"] = (mesh["fvf"] & 0x40) >> 6
+            mesh["NormalComp"] = (mesh["fvf"] & 0x80) >> 7
+            mesh["Color"] = (mesh["fvf"] & 0x100) >> 8
+            mesh["TangentComp"] = (mesh["fvf"] & 0x200) >> 9
+            mesh["BinormalComp"] = (mesh["fvf"] & 0x400) >> 10
+            mesh["PackedFirstUV"] = (mesh["fvf"] & 0x800) >> 11
+            mesh["UVComp2"] = (mesh["fvf"] & 0x1000) >> 12
+            mesh["UVComp3"] = (mesh["fvf"] & 0x2000) >> 13
+            mesh["Normal"] = (mesh["fvf"] & 0x4000) >> 14
+            mesh["NormalModifiedComp"] = (mesh["fvf"] & 0x8000) >> 15
+
+            mesh["mergedRanges"] = read_basic_draw_call_range(r)
+
+            numRanges = r.u32()
+            mesh["numRanges"] = numRanges
+            mesh["unk12"] = r.u32()
+            mesh["unk13"] = r.u32()
+
+            mesh["ranges"] = []
+            for _ in range(numRanges):
+                range_draw =  read_draw_call_range(r)
+                mesh["ranges"].append(range_draw)
+
+            meshes.append(mesh)
         lods.append(meshes)
     return lods
 
-
 def read_buffers(r):
-    bufs = []
-    count = r.u32()
-    for _ in range(count):
-        vsize = r.u32()
-        vbuf = r.bytes(vsize)
+    buffers = {
+        "gfxBuffer": [],
+    }
+
+    numBuffer = r.u32()
+    buffers["numBuffer"] = numBuffer
+
+    for _ in range(numBuffer):
+        buffer = {}
+
+        vbuf_size = r.u32()
+        buffer["vbuf_size"] = vbuf_size
+        buffer["vertexBuffer"] = r.bytes(vbuf_size)
         r.align(4)
-        isize = r.u32()
-        ibuf = r.bytes(isize)
+
+        ibuf_size = r.u32()
+        buffer["ibuf_size"] = ibuf_size
+        buffer["indexBuffer"] = r.bytes(ibuf_size)
         r.align(4)
-        bufs.append({
-            "vertex": vbuf,
-            "index": ibuf
-        })
-    return bufs
+
+        buffers["gfxBuffer"].append(buffer)
+
+    return buffers
+
 
 def read_mip(r):
     out = {"hasMips": r.u32()}
@@ -401,12 +566,14 @@ def parse_geometry(path):
     meta["skeletons"] = read_skeletons(r)
     meta["reflex"] = read_reflex(r)
     meta["secondaryMotionObjects"] = read_smos(r)
-
-    # raw_start = r.tell()
-    #meta["rawBetween"] = r.bytes(len(data) - r.tell())
-    #meta["fileSize"] = len(data)
+    meta["proceduralNodes"] = read_procedural_nodes(r)
+    meta["meshes"] = read_scene_meshes(r, meta["geomParams"]["lodCount"])
+    meta["useMip"] = r.u32()
+    meta["buffers"] = read_buffers(r)
+    meta["mip"] = read_mip(r)
+    meta["clothWrinkleControlPatchBundles"] = r.bytes(len(data) - r.tell())
 
     return meta
 
-parse_geometry(r".\char01.xbg")
+parse_geometry(r".\lm_chase_tower_base_02.xbg")
 
