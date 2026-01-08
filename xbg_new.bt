@@ -1,0 +1,578 @@
+typedef struct Vector2f
+{
+	float x;
+	float y;
+};
+
+typedef struct Vector3f
+{
+	float x;
+	float y;
+	float z;
+};
+
+typedef struct Vector4f
+{
+	float x;
+	float y;
+	float z;
+	float w;
+};
+
+typedef struct CSphere
+{
+	Vector3f center;
+	float radius;
+};
+
+typedef struct SMeshDecompression
+{
+  float m_positionMin;
+  float m_positionRange;
+  //float m_meshLocalHeight;
+  //float m_isBuildingFacadeInterior;
+};
+
+typedef struct CGeometryResourceHeader
+{
+	uint32 magic;
+	uint16 majorVersion;
+	uint16 minorVersion;
+	uint32 unk1;
+	uint32 unk2;
+	uint32 unk3;
+};
+
+typedef struct SMemoryNeed
+{
+	uint32 m_total;
+	uint32 m_sceneMeshCount;
+};
+
+typedef struct UnknownParams
+{
+	float unk1;
+	uchar unk2;
+	FSkip(3);
+};
+
+typedef struct CSceneGeometryShaderParameter
+{
+	SMeshDecompression m_meshDecompression;
+	float m_uvDecompression[2]; // scale and bias
+    
+    float unk5;
+	float unk6;
+	
+	CSphere m_boundingSphere;
+	//bBoxMin
+	Vector3f m_boundingBoxMin;
+	//bBoxMax
+	Vector3f m_boundingBoxMax;
+	
+	//Game doesn't read this?
+	uint32 unk11;
+	uint32 unk12;
+	uint32 unk13;
+	
+	uint32 m_lodCount;
+	struct {
+		float m_distance[m_lodCount];
+	} m_lods <optimize=false>;
+	float m_killDistance;
+	uchar m_castShadowEnable;
+	uchar m_showInReflectionEnable;
+	uchar m_pcSkuLodFlags;
+	uchar unk19; //0
+	
+	uint32 m_firstLowEndLOD;	//m_shadowLOD?
+	struct {
+		float m_distance[m_lodCount - m_firstLowEndLOD];
+	} m_lowEndDistanceLods <optimize=false>;
+};
+
+typedef struct CMaterialResources
+{
+	uint32 m_materialCount;
+	struct {
+		uint32 stringID <format=hex>;
+		uint32 stringSize;
+		char m_material[stringSize];
+		FSkip(-FTell()&3);
+	} m_materialResource[m_materialCount] <optimize=false>;
+	
+	uint32 m_slotCount;
+	struct {
+		uint32 stringID <format=hex>;
+		uint32 stringSize;
+		char m_slot[stringSize];
+		FSkip(-FTell()&3);
+		uint32 m_slotIndex;
+	} m_materialSlotToIndex[m_slotCount] <optimize=false>;
+};
+
+typedef struct CGeomSkin
+{
+	uint32 m_skinCount;
+	struct {
+		uint32 meshNameID <format=hex>;
+		uint32 stringSize;
+		char m_skinName[stringSize];
+		FSkip(-FTell()&3);
+	} m_skinNames[m_skinCount] <optimize=false>;
+};
+
+typedef struct BonePalettes
+{
+	uint32 nb_BonePallet;
+	struct {
+		uint32 m_boneCount;
+		uint16 m_boneIndex[m_boneCount];
+		FSkip(-FTell()&3);
+	} bonePallet[nb_BonePallet] <optimize=false>;
+	FSkip(-FTell()&3);
+};
+
+typedef struct SRawNode
+{
+	ubyte BoneLOD;
+	ubyte _unused[3];
+	Vector3f Position;
+	float Rotation[4];
+	ushort ParentIndex;
+	ushort ObjectToNodeMatrixIndex;
+	uint32 nodeID <format=hex>;
+	uint32 stringSize;
+	char m_nodeName[stringSize];
+	FSkip(-FTell()&3);
+};
+
+typedef struct CSkelResource
+{
+	uint32 m_nodeCount;
+	SRawNode m_geoNode[m_nodeCount] <optimize=false>;
+};
+
+typedef struct ObjectToBoneMatrices
+{
+	uint32 m_rootBoneMatrixIndex;
+	uint32 m_objectToBoneSkinningMatrixCount;
+	FSkip(-FTell()&15);
+	struct
+	{
+		float m[16];
+	} m_objectToBoneSkinningMatrix[m_objectToBoneSkinningMatrixCount] <optimize=false>;;
+};
+
+typedef struct CSkelResources
+{
+	uint32 m_skeletonCount;
+	CSkelResource skeleton[m_skeletonCount] <optimize=false>;
+	ObjectToBoneMatrices m_objectToBoneMatrices;
+};
+
+typedef struct CReflexModelData {
+	uint32 hasReflex;
+	if (hasReflex == 1) {
+		uint32 sizeFCB;
+		ubyte m_data[sizeFCB];
+        FSkip(-FTell()&3);
+	}
+};
+
+enum<uint32> ESecondaryMotionObjectType
+{
+  ESecondaryMotionObjectType_Cloth = 0x0,
+  ESecondaryMotionObjectType_Chain = 0x1,
+  ESecondaryMotionObjectType_Jiggle = 0x2,
+};
+
+typedef struct SSMSimulationParametersDesc
+{
+	Vector3f m_gravity;
+	float m_verticalStiffness;
+	float m_horizontalStiffness;
+	float m_shearStiffness;
+	float m_bendStiffness;
+	float m_viscousDrag;
+	float m_aerodynamicDrag;
+	float m_internalFriction;
+	float m_jiggleStiffness;
+	float m_frictionCoefficient;
+	float m_frictionExtraRadius;
+	uint32 m_numIterations;
+	ESecondaryMotionObjectType m_objectType;
+	ubyte m_useMaxLengthConstraints;
+	FSkip(3);
+};
+
+typedef struct CCollisionPrimitive
+{
+	uint32 boneID <format=hex>;
+	uint32 stringSize;
+	char m_boneName[stringSize];
+	FSkip(-FTell()&15);
+	float m_primitiveToBone[16];
+};
+
+typedef struct SCollisionPrimitiveCollection
+{
+	uint32 m_sphereCount;
+	struct {
+		CCollisionPrimitive m_collisionPrimitive;
+		float radius;
+	} spheres[m_sphereCount] <optimize=false>;
+	
+	uint32 m_cylinderCount;
+	struct {
+		CCollisionPrimitive m_collisionPrimitive;
+		float m_radius;
+		Vector3f m_localPointA;
+		Vector3f m_localPointB;
+	} cylinders[m_cylinderCount] <optimize=false>;
+	
+	uint32 m_capsuleCount;
+	struct {
+		CCollisionPrimitive m_collisionPrimitive;
+		float m_radius;
+		Vector3f m_localPointA;
+		Vector3f m_localPointB;
+	} capsules[m_capsuleCount] <optimize=false>;
+	
+	uint32 m_infinitePlaneCount;
+	struct {
+		CCollisionPrimitive m_collisionPrimitive;
+		Vector3f m_localOrigin;
+		Vector3f m_localNormal;
+	} planes[m_infinitePlaneCount] <optimize=false>;
+};
+
+typedef struct CMeshNameID
+{
+	uint32 boneID <format=hex>;
+	uint32 stringSize;
+	char m_boneName[stringSize];
+};
+
+typedef struct SLimitCollection
+{
+	uint32 m_sphereLimitCount;
+	struct {
+		CMeshNameID name <optimize=false>;
+		FSkip(-FTell()&1);
+		ushort m_particleIndex;
+		Vector3f m_offset;
+		FSkip(-FTell()&3);
+		float m_radius;
+	} sphereLimits[m_sphereLimitCount] <optimize=false>;
+	
+	uint32 m_boxLimitCount;
+	struct {
+		CMeshNameID name <optimize=false>;
+		FSkip(-FTell()&1);
+		ushort m_particleIndex;
+		Vector3f m_offset;
+		FSkip(-FTell()&3);
+		Vector3f m_halfRange;
+	} boxLimits[m_boxLimitCount] <optimize=false>;
+	
+	uint32 m_cylinderLimitCount;
+	struct {
+		CMeshNameID name <optimize=false>;
+		FSkip(-FTell()&1);
+		ushort m_particleIndex;
+		Vector3f m_offset;
+		FSkip(-FTell()&3);
+		Vector3f m_localDirection;
+		float m_length;
+		float m_radius;
+	} cylinderLimits[m_cylinderLimitCount] <optimize=false>;
+};
+
+typedef struct SParticle
+{
+	CMeshNameID name <optimize=false>;
+	FSkip(-FTell()&3);
+	float radius;
+	ushort m_isAttached;
+	ushort teleportParentBoneIndex;
+	Vector2f m_texCoordinate;
+};
+
+typedef struct SParticles
+{
+	uint32 m_particleCount;
+	SParticle particle[m_particleCount]  <optimize=false>;
+};
+
+typedef struct STeleportParentBones
+{
+	uint32 m_boneCount;
+	struct {
+		CMeshNameID name <optimize=false>;
+		FSkip(-FTell()&3);
+	} teleportParentBone[m_boneCount] <optimize=false>;
+};
+
+typedef struct SSMTriangleDesc
+{
+	ushort m_index1;
+	ushort m_index2;
+	ushort m_index3;
+};
+
+typedef struct SSMTriangleDescs
+{
+	uint32 m_triangleDescCount;
+	SSMTriangleDesc m_triangleDesc[m_triangleDescCount] <optimize=false>;
+	FSkip(-FTell()&3);
+};
+
+typedef struct SSMParticleConnectivities
+{
+	uint m_connectivityCount;
+	ushort m_neighbor[m_connectivityCount];
+};
+
+enum<ushort> ESecondaryMotionSpringType
+{
+  ESecondaryMotionSpringType_StructuralMisc = 0x0,
+  ESecondaryMotionSpringType_StructuralVertical = 0x1,
+  ESecondaryMotionSpringType_StructuralHorizontal = 0x2,
+  ESecondaryMotionSpringType_ShearDiagonal = 0x3,
+  ESecondaryMotionSpringType_Bend = 0x4,
+  ESecondaryMotionSpringType_BendVertical = 0x5,
+};
+
+typedef struct SSMSpringDesc
+{
+	ushort m_index1;
+	ushort m_index2;
+	ESecondaryMotionSpringType m_springType;
+};
+
+typedef struct SSMSpringDescs
+{
+	uint m_springCount;
+	SSMSpringDesc m_spring[m_springCount];
+};
+
+typedef struct SecondaryMotionObjects {
+	uint32 m_numSecondaryMotionObject;
+	struct {
+		SSMSimulationParametersDesc simulationParameters;
+		SCollisionPrimitiveCollection collisionPrimitiveCollectionDescription;
+		SLimitCollection limitCollectionDescription;
+		SParticles particles;
+		STeleportParentBones teleportParentBones;
+		SSMTriangleDescs triangles;
+		SSMParticleConnectivities connectivities;
+		SSMSpringDescs springs;
+		
+		ushort m_numStructuralVerticalSprings;
+		ushort m_isHandInPocketCompatible;
+		FSkip(-FTell()&3);
+		
+	} m_secondaryMotionObject[m_numSecondaryMotionObject] <optimize=false>;
+};
+
+enum<ubyte> EProceduralNodeType
+{
+	eProceduralNodeType_None = 0x0,
+	eProceduralNodeType_OrientationWeighted = 0x1,
+	eProceduralNodeType_Twist = 0x2,
+	eProceduralNodeType_OrientationWeightedModelSpace = 0x3,
+	eProceduralNodeType_PositionScalingXYZ__UNUSED = 0x4,
+	eProceduralNodeType_OffsetWeightedModelSpace = 0x5,
+};
+
+typedef struct SProceduralNode
+{
+	ushort m_nBoneIndex;
+	EProceduralNodeType m_eProceduralNodeType;
+	FSkip(1);
+	
+	switch (m_eProceduralNodeType) {
+		case 1:
+			uint32 t1_unk1;
+			float t1_unk2;
+			uint32 t1_unk3;
+			float t1_unk4;
+			break;
+		case 2:
+			//Type 2
+			uint32 t2_unk1;
+			float t2_unk2;
+			break;
+		case 3:
+			//Type 3
+			uint32 t3_unk1;
+			uint32 t3_unk2;
+			float t3_unk3;
+			break;
+		case 5:
+			//Type 5
+			uint32 t5_unk1;
+			uint32 t5_unk2;
+			float t5_unk3;
+			float t5_unk4;
+			float t5_unk5;
+			float t5_unk6;
+			float t5_unk7;
+			float t5_unk8;
+			float t5_unk9;
+			break;
+		
+		case 6:
+			//Type 6
+			uint32 t6_unk1;
+			uint32 t6_unk2;
+			uint32 t6_unk3;
+			uint32 t6_unk4;
+			uint32 t6_unk5;
+			break;
+	}
+};
+
+typedef struct SProceduralNodes
+{
+	uint32 m_numProceduralNode;
+	SProceduralNode node[m_numProceduralNode] <optimize=false>;
+};
+
+typedef struct CBasicDrawCallRange
+{
+	uint32 m_vertexBufferByteOffset;
+	uint32 m_primitiveCount;
+	uint32 m_indexCount;
+	uint32 m_indexBufferStartIndex;
+	ushort m_vertexCount;
+	ushort m_minIndexValue;
+	ushort m_maxIndexValue;
+	ushort unk99;	//padding?
+};
+
+typedef struct CDrawCallRange
+{
+	CBasicDrawCallRange drawCall;
+	CSphere m_boundingSphere;
+	Vector3f m_boundingBoxMin;
+	Vector3f m_boundingBoxMax;
+	CMeshNameID m_nameID;
+	FSkip(-FTell()&3);
+	ushort m_visibilityBitIndex;
+	ushort m_attachedBoneIndex;
+};
+
+typedef struct CSceneMesh
+{
+	CSphere m_boundingSphere;
+	Vector3f m_boundingBoxMin;
+	Vector3f m_boundingBoxMax;
+	uint32 m_primitiveType;
+	ushort m_materialIndex;
+	//ushort m_simpleFVF;
+	struct {
+		ushort MeshFVF_Point : 1;	//R32G32B32_Float, 12 bytes
+		ushort MeshFVF_PointComp : 1;	//R16G16B16A16_SINT, 8 bytes
+		ushort MeshFVF_UV : 1;	//R32G32_Float, 8 bytes
+		ushort MeshFVF_UVComp1 : 1;	//R16G16_SINT, 4 bytes, combining with UVComp below
+		ushort MeshFVF_Skin : 1;	//R8G8B8A8_UNORM + R8G8B8A8_UINT, 8 bytes, BlendWeight then BlendIndices
+		ushort MeshFVF_SkinExtra : 1;	//? R8G8B8A8_UNORM, 4 bytes
+		ushort MeshFVF_SkinRigid : 1;	//? Doesn't declare bytes - but taking w from PointComp as BlendIndex, BlendWeight is float4( 1.0f, 0.0f, 0.0f, 0.0f )
+		ushort MeshFVF_NormalComp : 1;	//R8G8B8A8_UNORM, 4 bytes
+		ushort MeshFVF_Color : 1;	//R8G8B8A8_UNORM, 4 bytes
+		ushort MeshFVF_TangentComp : 1;	//R8G8B8A8_UNORM, 4 bytes
+		ushort MeshFVF_BinormalComp : 1;	//R8G8B8A8_UNORM, 4 bytes
+		ushort MeshFVF_PackedFirstUV : 1;	//R8G8B8A8_UNORM, 4 bytes
+		ushort MeshFVF_UVComp2 : 1; //R16G16_SINT, 4 bytes
+		ushort MeshFVF_UVComp3 : 1; //R16G16_SINT, 4 bytes
+		ushort MeshFVF_Normal : 1;	//R32G32B32_Float, 12 bytes
+		ushort MeshFVF_NormalModifiedComp : 1;	//? R8G8B8A8_UNORM, 4 bytes
+	} m_simpleFVF;
+/*
+	MeshFVF_Point = 0x1,
+	MeshFVF_PointComp = 0x2,
+	MeshFVF_UV = 0x4,
+	MeshFVF_UVComp = 0x8,
+	MeshFVF_UVComp1 = 0x8,
+	MeshFVF_Skin = 0x10,
+	MeshFVF_SkinExtra = 0x20,
+	MeshFVF_SkinRigid = 0x40,
+	MeshFVF_NormalComp = 0x80,
+	MeshFVF_Color = 0x100,
+	MeshFVF_TangentComp = 0x200,
+	MeshFVF_BinormalComp = 0x400,
+	MeshFVF_PackedFirstUV = 0x800,
+	MeshFVF_UVComp2 = 0x1000,
+	MeshFVF_UVComp3 = 0x2000,
+	MeshFVF_Normal = 0x4000,
+	MeshFVF_NormalModifiedComp = 0x8000,
+*/
+	ubyte m_vertexSize;
+	ubyte unk9;
+	ushort unk10;
+	uint32 m_boneMapIndex;
+	CBasicDrawCallRange m_mergedRanges;
+	uint32 m_numRanges;
+	uint32 unk12;
+	uint32 unk13;
+	CDrawCallRange m_ranges[m_numRanges] <optimize=false>;
+};
+
+typedef struct CSceneMeshes
+{
+	uint32 m_numCSceneMesh;
+	CSceneMesh mesh[m_numCSceneMesh] <optimize=false>;
+};
+
+typedef	struct SGfxBuffer
+{
+	uint32 vbuf_size;
+	ubyte vertexBuffer[vbuf_size];
+	FSkip(-FTell()&3);
+	
+	uint32 ibuf_size;
+	ubyte indexBuffer[ibuf_size];
+	FSkip(-FTell()&3);
+};
+
+typedef	struct SGfxBuffers
+{
+	uint32 m_numBuffer;
+	SGfxBuffer gfxBuffer[m_numBuffer] <optimize=false>;
+};
+
+typedef struct CGeometryMipResource
+{
+    uint32 hasMips;
+    if (hasMips) {
+        uint32 unk1;	//quality?
+        uint32 mipSize;
+        uint32 path_string_id <format=hex>;
+        uint32 path_string_size;
+        char path[path_string_size];
+		FSkip(-FTell()&3);
+    }
+};
+
+LittleEndian();
+CGeometryResourceHeader header;
+SMemoryNeed memoryNeeded;
+UnknownParams unkParams;
+CSceneGeometryShaderParameter geomParams;
+CMaterialResources materials;
+CGeomSkin skins;
+BonePalettes bonePalettes;
+CSkelResources skelResources;
+CReflexModelData reflexData;
+SecondaryMotionObjects secondaryMotionObjects;
+SProceduralNodes proceduralNodes;
+CSceneMeshes meshes[geomParams.m_lodCount] <optimize=false>;
+uint32 useMip_MAYBE;
+SGfxBuffers buffers;
+CGeometryMipResource mip;
+struct 
+{
+	ubyte data[FileSize() - FTell()];
+} clothWrinkleControlPatchBundles;
