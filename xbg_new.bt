@@ -29,8 +29,14 @@ typedef struct SMeshDecompression
 {
   float m_positionMin;
   float m_positionRange;
-  //float m_meshLocalHeight;
+  float m_meshLocalHeight;	// not used
   //float m_isBuildingFacadeInterior;
+};
+
+typedef struct SUVDecompression
+{
+  float m_UVDecompressionXY;
+  float m_UVDecompressionZW;
 };
 
 typedef struct CGeometryResourceHeader
@@ -59,9 +65,9 @@ typedef struct UnknownParams
 typedef struct CSceneGeometryShaderParameter
 {
 	SMeshDecompression m_meshDecompression;
-	float m_uvDecompression[2]; // scale and bias
+	SUVDecompression m_uvDecompression; // scale and bias
     
-    float unk5;
+    //float unk5;
 	float unk6;
 	
 	CSphere m_boundingSphere;
@@ -449,7 +455,8 @@ typedef struct CBasicDrawCallRange
 	ushort m_vertexCount;
 	ushort m_minIndexValue;
 	ushort m_maxIndexValue;
-	ushort unk99;	//padding?
+    ushort m_groupCount;    //vertex smoothing group?
+	//ushort unk99;	//padding?
 };
 
 typedef struct CDrawCallRange
