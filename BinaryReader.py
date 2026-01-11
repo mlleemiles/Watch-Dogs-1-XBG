@@ -6,6 +6,9 @@ class BinaryReader:
         self.pos = 0
         self.size = len(data)
 
+    def set_buffer(self, data):
+        self.data = data
+
     def tell(self):
         return self.pos
 
@@ -20,6 +23,9 @@ class BinaryReader:
     def skip(self, size):
         self.pos += size
 
+    def seek(self, offset):
+        self.pos = offset
+
     def u8(self):
         v = self.data[self.pos]
         self.pos += 1
@@ -32,6 +38,21 @@ class BinaryReader:
 
     def u32(self):
         v = struct.unpack_from("<I", self.data, self.pos)[0]
+        self.pos += 4
+        return v
+
+    def i8(self):
+        v = struct.unpack_from("<b", self.data, self.pos)[0]
+        self.pos += 1
+        return v
+
+    def i16(self):
+        v = struct.unpack_from("<h", self.data, self.pos)[0]
+        self.pos += 2
+        return v
+
+    def i32(self):
+        v = struct.unpack_from("<i", self.data, self.pos)[0]
         self.pos += 4
         return v
 
