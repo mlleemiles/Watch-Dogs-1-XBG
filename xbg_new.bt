@@ -467,7 +467,7 @@ typedef struct CDrawCallRange
 	Vector3f m_boundingBoxMax;
 	CMeshNameID m_nameID;
 	FSkip(-FTell()&3);
-	ushort m_visibilityBitIndex;
+	ushort m_skinIndex;
 	ushort m_attachedBoneIndex;
 };
 
@@ -522,7 +522,7 @@ typedef struct CSceneMesh
 	uint32 m_boneMapIndex;
 	CBasicDrawCallRange m_mergedRanges;
 	uint32 m_numRanges;
-	uint32 unk12;
+	uint32 m_numSkins;
 	uint32 unk13;
 	CDrawCallRange m_ranges[m_numRanges] <optimize=false>;
 };
@@ -576,7 +576,7 @@ CReflexModelData reflexData;
 SecondaryMotionObjects secondaryMotionObjects;
 SProceduralNodes proceduralNodes;
 CSceneMeshes meshes[geomParams.m_lodCount] <optimize=false>;
-uint32 useMip_MAYBE;
+uint32 mipCount;
 SGfxBuffers buffers;
 CGeometryMipResource mip;
 struct 
