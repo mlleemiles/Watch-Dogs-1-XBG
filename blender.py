@@ -63,7 +63,6 @@ def precompute_bone_mapping(xbg_data):
             for bone_id, bone_data in enumerate(skeleton):
                 matrix_index = bone_data["matrixIndex"]
                 bone_map_reorder[matrix_index] = bone_id
-
             bone_mapping.append(bone_map_reorder)
     else:
         bone_map_reorder = {}
@@ -205,12 +204,12 @@ def create_mesh_object(positions, mesh, xbg, bone_mapping, indices_list, uv_sets
                 face.loops[2][uv_layer].uv = uv_list[c_idx]
 
     # Prune unused vertices
-    # bm = prune_unused_vertices(bm)
+    #bm = prune_unused_vertices(bm)
 
     # Create mesh data and object
     mesh_data = bpy.data.meshes.new(skin_name)
     bm.to_mesh(mesh_data)
-    # bm.free()
+    bm.free()
 
     mesh_obj = bpy.data.objects.new(skin_name, mesh_data)
 
@@ -242,10 +241,11 @@ def create_mesh_object(positions, mesh, xbg, bone_mapping, indices_list, uv_sets
 
 
     #bm.free()
-
+    bm = bmesh.new()
     bm.from_mesh(mesh_obj.data)
     bm = prune_unused_vertices(bm)
     bm.to_mesh(mesh_obj.data)
+    mesh_obj.data.update()
     bm.free()
 
 
