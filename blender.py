@@ -1,299 +1,408 @@
 import sys
 import bpy
 import bmesh
-import struct
-import os  # For safe path handling
+import os
 
-# Add your XBG parser path
+# Add XBG parser path
 sys.path.append(r"C:\Users\mllee\PycharmProjects\XBG_Deserialize")
 import BinaryReader
 from XBGParser import XBGParser
 
 
 # --------------------------
-# Helper Functions
+# Core Helper Functions (No Nesting)
 # --------------------------
-def create_empty_parent(name, parent_obj=None, loc=(0, 0, 0)):
-    """Create empty object with safe parenting"""
-    empty = bpy.data.objects.new(name, None)
-    bpy.context.collection.objects.link(empty)
-    empty.location = loc
-    if parent_obj:
-        empty.parent = parent_obj
-    return empty
+def create_collection(name, parent_collection=None):
+    """Create and link a Blender Collection"""
+    new_col = bpy.data.collections.new(name)
+    if parent_collection:
+        parent_collection.children.link(new_col)
+    else:
+        bpy.context.scene.collection.children.link(new_col)
+    return new_col
 
 
 def reset_reader(reader, buffer_data):
-    """Reset binary reader to start of buffer (critical for multi-LOD)"""
+    """Reset binary reader to start of buffer"""
     reader.set_buffer(buffer_data)
     reader.seek(0)
 
 
 def prune_unused_vertices(bm):
-    """Remove unused vertices from a BMesh (vertices with no face/edge connections)"""
-    # Collect vertices with no edges/faces
+    """Remove unused vertices from BMesh"""
     unused_verts = [v for v in bm.verts if not v.link_faces and not v.link_edges]
-    # Delete unused vertices
     for v in unused_verts:
         bm.verts.remove(v)
-    # Update BMesh to apply changes
     bm.verts.ensure_lookup_table()
     bm.faces.ensure_lookup_table()
     return bm
 
 
-# --------------------------
-# 1. Parse XBG File
-# --------------------------
-xbg_path = r"D:\Steam\steamapps\common\Watch_Dogs\data_win64\worlds\windy_city\windy_city_unpack\graphics\characters\char\char01\char01_torso.xbg"
-xbg_name = os.path.splitext(os.path.basename(xbg_path))[0]
-parser = XBGParser(xbg_path)
-meta_data = parser.parse()
+def full_cleanup():
+    """Clear all objects and non-default collections"""
+    # Delete all objects
+    for obj in bpy.data.objects:
+        bpy.data.objects.remove(obj)
+    # Delete non-default collections
+    default_collections = {"Collection"}
+    for col in bpy.data.collections:
+        if col.name not in default_collections:
+            bpy.data.collections.remove(col)
 
-# Extract filename safely (fix for f-string backslash error)
-xbg_filename = os.path.basename(xbg_path).split('.')[0]
 
-# Critical metadata
-lod_count = meta_data["geomParams"]["lodCount"]
-buffers = meta_data["buffers"]["gfxBuffer"]
-lod_distances = meta_data["geomParams"]["lodDistances"] if lod_count > 0 else []
-pos_min = meta_data["geomParams"]["meshDecompression"]["positionMin"]
-pos_range = meta_data["geomParams"]["meshDecompression"]["positionRange"]
+def read_vertex_data(vertex_reader, vertex_buffer, mesh, pos_min, pos_range, uv_decomp_xy, uv_decomp_zw):
+    """Read vertex positions and UVs (single-purpose function) - FIXED: Pass vertex_buffer explicitly"""
 
-print(f"=== XBG Import Debug ===")
-print(f"File: {xbg_filename}")
-print(f"Total LODs: {lod_count}")
-print(f"Total Buffers: {len(buffers)}")
-print(f"LOD Distances: {lod_distances}")
-print(f"========================")
+    vertex_offset = mesh["mergedRanges"]["vertexBufferByteOffset"]
+    vertex_count = mesh["mergedRanges"]["vertexCount"]
+    vertex_size = mesh["vertexSize"]
 
-# Validate core data
-if lod_count == 0:
-    raise Exception("No LODs found in XBG file!")
-if len(buffers) == 0:
-    raise Exception("No vertex/index buffers found!")
+    reset_reader(vertex_reader, vertex_buffer)  # Fixed: Use passed vertex_buffer instead of reader.buffer
+    vertex_reader.seek(vertex_offset)
 
-# --------------------------
-# 2. Clear Default Objects
-# --------------------------
-for obj in bpy.data.objects:
-    obj.hide_set(False)  # Make visible in viewport
-    obj.hide_select = False  # Make selectable
+    positions = []
+    uv0 = []
+    uv1 = []
+    bone_indices = []
+    bone_weights = []
 
-bpy.ops.object.select_all(action='SELECT')
-bpy.ops.object.delete()
-
-# --------------------------
-# 3. Create Root Hierarchy
-# --------------------------
-root_empty = create_empty_parent(f"{xbg_filename}")
-root_empty.location = (0, 0, 0)
-
-# --------------------------
-# 4. Process ALL LODs (With Shared Vertex Grouping)
-# --------------------------
-global_submesh_id = 0
-
-for lod_index in range(lod_count):
-    # --------------------------
-    # A. Create LOD Parent Empty
-    # --------------------------
-    lod_name = f"LOD{lod_index}"
-    lod_parent = create_empty_parent(lod_name, parent_obj=root_empty)
-    # lod_parent.hide_viewport = lod_index != 0  # Hide all except LOD 0
-    # lod_parent.hide_render = lod_index != 0
-
-    # --------------------------
-    # B. Get LOD-Specific Buffer & Data
-    # --------------------------
-    buffer_idx = min(lod_index, len(buffers) - 1)
-    current_buffer = buffers[buffer_idx]
-    vertex_buffer = current_buffer["vertexBuffer"]
-    index_buffer = current_buffer["indexBuffer"]
-
-    # Reset readers for THIS LOD (critical!)
-    vertex_reader = BinaryReader.BinaryReader(vertex_buffer)
-    index_reader = BinaryReader.BinaryReader(index_buffer)
-    reset_reader(vertex_reader, vertex_buffer)
-    reset_reader(index_reader, index_buffer)
-
-    # Validate LOD mesh data
-    if lod_index >= len(meta_data["meshes"]):
-        print(f"Warning: No meshes found for LOD {lod_index}")
-        continue
-    lod_meshes = meta_data["meshes"][lod_index]
-
-    # --------------------------
-    # C. Group Meshes by SHARED Vertex Stream (Your Original Logic)
-    # --------------------------
-    vertex_groups = {}  # Key: (vertex_offset, vertex_count), Value: group data
-    group_order = []
-
-    for submesh_idx, scene_mesh in enumerate(lod_meshes):
-        mr = scene_mesh["mergedRanges"]
-        # Key = unique identifier for shared vertex stream
-        group_key = (mr["vertexBufferByteOffset"], mr["vertexCount"])
-
-        # Create new group if it doesn't exist
-        if group_key not in vertex_groups:
-            vertex_groups[group_key] = {
-                "vertex_offset": mr["vertexBufferByteOffset"],
-                "vertex_count": mr["vertexCount"],
-                "vertex_size": scene_mesh["vertexSize"],
-                "primitive_type": scene_mesh["primitiveType"],
-                "submeshes": []  # Store submeshes that share this vertex stream
-            }
-            group_order.append(group_key)
-
-        # Add submesh to the group (with its draw ranges)
-        vertex_groups[group_key]["submeshes"].append({
-            "submesh_idx": submesh_idx,
-            "mat_index": scene_mesh["materialIndex"],
-            "draw_ranges": scene_mesh["ranges"]
-        })
-
-    # --------------------------
-    # D. Process Each Shared Vertex Group
-    # --------------------------
-    for group_idx, group_key in enumerate(group_order):
-        group = vertex_groups[group_key]
-        vertex_offset = group["vertex_offset"]
-        vertex_count = group["vertex_count"]
-        vertex_size = group["vertex_size"]
-        primitive_type = group["primitive_type"]
-
-        # Skip invalid groups
-        if vertex_count == 0 or vertex_size < 6:
-            print(f"LOD {lod_index}: Skipping invalid vertex group {group_idx}")
-            continue
-
-        # --------------------------
-        # E. Read SHARED Vertex Stream ONCE for the group
-        # --------------------------
-        reset_reader(vertex_reader, vertex_buffer)
-        vertex_reader.seek(vertex_offset)
-        positions = []
-
-        for _ in range(vertex_count):
-            # Read and decompress 16-bit vertex coordinates
+    for _ in range(vertex_count):
+        read_bytes = 0
+        # Read position (skip w component)
+        if mesh["PointComp"]:
             x = vertex_reader.i16() * pos_range + pos_min
             y = vertex_reader.i16() * pos_range + pos_min
             z = vertex_reader.i16() * pos_range + pos_min
+            vertex_reader.i16()  # Skip w
             positions.append((x, y, z))
+            read_bytes += 8
 
-            # Skip remaining vertex bytes (safe skip)
-            vertex_reader.skip(max(0, vertex_size - 6))
+        # UV needs wrap address mode, dunno why
+        # Flipped V because blender is fucking stupid
+        # Read UV0
+        if mesh["UVComp1"]:
+            uv0_u = (vertex_reader.i16() * uv_decomp_zw + uv_decomp_xy) % 1.0
+            uv0_v = (-vertex_reader.i16() * uv_decomp_zw + uv_decomp_xy) % 1.0
+            uv0.append((uv0_u, uv0_v))
+            read_bytes += 4
+
+        # Read UV1
+        if mesh["UVComp2"]:
+            uv1_u = (vertex_reader.i16() * uv_decomp_zw + uv_decomp_xy) % 1.0
+            uv1_v = (-vertex_reader.i16() * uv_decomp_zw + uv_decomp_xy) % 1.0
+            uv1.append((uv1_u, uv1_v))
+            read_bytes += 4
+
+        if mesh["Skin"]:
+            w0 = vertex_reader.u8() / 255.0
+            w1 = vertex_reader.u8() / 255.0
+            w2 = vertex_reader.u8() / 255.0
+            w3 = vertex_reader.u8() / 255.0
+
+            b0 = vertex_reader.u8()
+            b1 = vertex_reader.u8()
+            b2 = vertex_reader.u8()
+            b3 = vertex_reader.u8()
+            read_bytes += 8
+
+            if mesh["SkinExtra"]:
+                w4 = vertex_reader.u8() / 255.0
+                w5 = vertex_reader.u8() / 255.0
+                b4 = vertex_reader.u8()
+                b5 = vertex_reader.u8()
+                read_bytes += 4
+                bone_indices.append((b0, b1, b2, b3, b4, b5))
+                bone_weights.append((w0, w1, w2, w3, w4, w5))
+            else:
+                bone_indices.append((b0, b1, b2, b3))
+                bone_weights.append((w0, w1, w2, w3))
+
+        vertex_reader.skip(vertex_size - read_bytes)
+
+    # Prepare UV sets for return
+    uv_sets = []
+    uv_set_names = []
+    if mesh["UVComp1"]:
+        uv_sets.append(uv0)
+        uv_set_names.append("uv0")
+    if mesh["UVComp2"]:
+        uv_sets.append(uv1)
+        uv_set_names.append("uv1")
+
+    return positions, uv_sets, uv_set_names, bone_indices, bone_weights
+
+
+def read_indices(index_reader, index_buffer, idx_offset, idx_count, primitive_type):
+    """Read index data (single-purpose function)"""
+    reset_reader(index_reader, index_buffer)  # Uses passed index_buffer (correct)
+    index_reader.seek(idx_offset)
+
+    indices_list = []
+
+    if primitive_type.name == "TriangleList":
+        for _ in range(idx_count // 3):
+            a, b, c = index_reader.u16(), index_reader.u16(), index_reader.u16()
+            indices_list.append((a, b, c))
+    elif primitive_type.name == "TriangleStrip":
+        indices = [index_reader.u16() for _ in range(idx_count)]
+        for i in range(2, len(indices)):
+            if i % 2 == 0:
+                a, b, c = indices[i - 2], indices[i - 1], indices[i]
+            else:
+                a, b, c = indices[i - 1], indices[i - 2], indices[i]
+            indices_list.append((a, b, c))
+
+    return indices_list
+
+
+def create_mesh_object(positions, mesh, xbg, indices_list, uv_sets, uv_set_names, skin_name, bone_indices, bone_weights):
+    """Create Blender mesh object (single-purpose function)"""
+    # Create BMesh
+    bm = bmesh.new()
+
+    # Add UV layers
+    uv_layers = [bm.loops.layers.uv.new(name) for name in uv_set_names]
+
+    # Create vertices
+    bm_verts = [bm.verts.new(pos) for pos in positions]
+    bm.verts.ensure_lookup_table()
+
+    # Create faces and assign UVs
+    for a_idx, b_idx, c_idx in indices_list:
+        a, b, c = bm_verts[a_idx], bm_verts[b_idx], bm_verts[c_idx]
+        face = bm.faces.new([a, b, c])
+        if mesh["UVComp1"] or mesh["UV"]:
+            # Assign UVs to face loops
+            for uv_set_idx, uv_layer in enumerate(uv_layers):
+                uv_list = uv_sets[uv_set_idx]
+                face.loops[0][uv_layer].uv = uv_list[a_idx]
+                face.loops[1][uv_layer].uv = uv_list[b_idx]
+                face.loops[2][uv_layer].uv = uv_list[c_idx]
+
+    # Prune unused vertices
+    # bm = prune_unused_vertices(bm)
+
+    # Create mesh data and object
+    mesh_data = bpy.data.meshes.new(skin_name)
+    bm.to_mesh(mesh_data)
+    # bm.free()
+
+    mesh_obj = bpy.data.objects.new(skin_name, mesh_data)
+
+    if mesh["Skin"]:
+        bone_count = 4
+        if mesh["SkinExtra"]:
+            bone_count = 6
+        for i in range(mesh["mergedRanges"]["minIndexValue"], mesh["mergedRanges"]["maxIndexValue"] + 1):
+            for j in range(bone_count):
+                if bone_weights[i][j] != 0.0:
+                    if mesh["boneMapIndex"] == 0xFFFFFFFF:
+                        boneIndex = bone_indices[i][j]
+                        for bone_id in range(len(xbg["skeletons"]["skeletons"][0])):
+                            if xbg["skeletons"]["skeletons"][0][bone_id]["matrixIndex"] == boneIndex:  # Compare IDs
+                                boneIndex = bone_id
+                                break
+                        vertex_group_name = xbg["skeletons"]["skeletons"][0][boneIndex]["name"]
+                    else:
+                        boneMap = xbg["bonePalettes"][mesh["boneMapIndex"]]
+                        #print(f"Bone Map Index: {len(boneMap)} {mesh['boneMapIndex']} Bone Index: {bone_indices[i][j]} {i}")
+                        #print(f"Mesh material: {mesh['materialIndex']}")
+                        boneIndex = boneMap[bone_indices[i][j]]
+                        for bone_id in range(len(xbg["skeletons"]["skeletons"][0])):
+                            if xbg["skeletons"]["skeletons"][0][bone_id]["matrixIndex"] == boneIndex:  # Compare IDs
+                                boneIndex = bone_id
+                                break
+                        vertex_group_name = xbg["skeletons"]["skeletons"][0][boneIndex]["name"]
+
+                    if vertex_group_name not in mesh_obj.vertex_groups:
+                        mesh_obj.vertex_groups.new(name=vertex_group_name)
+                    else:
+                        mesh_obj.vertex_groups[vertex_group_name]
+
+                    mesh_obj.vertex_groups[vertex_group_name].add([i], bone_weights[i][j], 'ADD')
+
+
+    #bm.free()
+
+    bm.from_mesh(mesh_obj.data)
+    bm = prune_unused_vertices(bm)
+    bm.to_mesh(mesh_obj.data)
+    bm.free()
+
+
+
+    return mesh_obj
+
+
+def get_material_name(meta_data, lod_meshes, submesh_idx, mat_index):
+    """Get material slot name (single-purpose function)"""
+    material_slot_name = f"Material_{mat_index}"
+    material_slot_index = lod_meshes[submesh_idx]["materialIndex"]
+    for slot in meta_data["materials"]["slots"]:
+        if slot["slotIndex"] == material_slot_index:
+            material_slot_name = slot["value"]
+            break
+    return material_slot_name
+
+
+# --------------------------
+# Main Import Logic (Flat Loop Hierarchy)
+# --------------------------
+def import_xbg(xbg_path):
+    # Parse XBG file
+    xbg_name = os.path.splitext(os.path.basename(xbg_path))[0]
+    parser = XBGParser(xbg_path)
+    meta_data = parser.parse()
+
+    # Extract core metadata
+    lod_count = meta_data["geomParams"]["lodCount"]
+    buffers = meta_data["buffers"]["gfxBuffer"]
+    lod_distances = meta_data["geomParams"]["lodDistances"]
+    pos_min = meta_data["geomParams"]["meshDecompression"]["positionMin"]
+    pos_range = meta_data["geomParams"]["meshDecompression"]["positionRange"]
+    uv_decomp_xy = meta_data["geomParams"]["uvDecompression"]["UVDecompressionXY"]
+    uv_decomp_zw = meta_data["geomParams"]["uvDecompression"]["UVDecompressionZW"]
+
+    # Print basic info
+    print(f"=== XBG Import ===")
+    print(f"File: {xbg_name}")
+    print(f"Total LODs: {lod_count}")
+    print(f"Total Buffers: {len(buffers)}")
+    print(f"==================")
+
+    # Clean slate
+    full_cleanup()
+
+    # Create root collection
+    root_collection = create_collection(xbg_name)
+
+    # Track progress
+    global_submesh_id = 0
+
+    # --------------------------
+    # Process LODs (Level 1 Loop)
+    # --------------------------
+    for lod_index in range(lod_count):
+        # Create LOD collection
+        lod_collection = create_collection(f"LOD{lod_index}", root_collection)
+
+        # Get LOD buffer data
+        buffer_idx = min(lod_index, len(buffers) - 1)
+        current_buffer = buffers[buffer_idx]
+        vertex_buffer = current_buffer["vertexBuffer"]  # This is the raw buffer data
+        index_buffer = current_buffer["indexBuffer"]  # This is the raw buffer data
+
+        # Initialize readers
+        vertex_reader = BinaryReader.BinaryReader(vertex_buffer)
+        index_reader = BinaryReader.BinaryReader(index_buffer)
+
+        # Get LOD meshes
+        lod_meshes = meta_data["meshes"][lod_index]
 
         # --------------------------
-        # F. Create Group Parent Empty
+        # Group meshes by shared vertex stream (Helper Logic)
         # --------------------------
-        group_parent = create_empty_parent(
-            f"Vertex_Group_{group_idx}",
-            parent_obj=lod_parent
-        )
+        vertex_groups = {}
+        group_order = []
+        for submesh_idx, scene_mesh in enumerate(lod_meshes):
+            mr = scene_mesh["mergedRanges"]
+            group_key = (mr["vertexBufferByteOffset"], mr["vertexCount"])
+
+            if group_key not in vertex_groups:
+                vertex_groups[group_key] = {
+                    "vertex_offset": mr["vertexBufferByteOffset"],
+                    "vertex_count": mr["vertexCount"],
+                    "vertex_size": scene_mesh["vertexSize"],
+                    "primitive_type": scene_mesh["primitiveType"],
+                    "submeshes": []
+                }
+                group_order.append(group_key)
+
+            vertex_groups[group_key]["submeshes"].append({
+                "submesh_idx": submesh_idx,
+                "mat_index": scene_mesh["materialIndex"],
+                "draw_ranges": scene_mesh["ranges"]
+            })
 
         # --------------------------
-        # G. Process All Submeshes in This Group
+        # Process vertex groups (Level 2 Loop)
         # --------------------------
-        for submesh_data in group["submeshes"]:
-            submesh_idx = submesh_data["submesh_idx"]
-            mat_index = submesh_data["mat_index"]
-            draw_ranges = submesh_data["draw_ranges"]
+        for group_idx, group_key in enumerate(group_order):
+            group = vertex_groups[group_key]
+            primitive_type = group["primitive_type"]
 
-            material_slot_index = lod_meshes[submesh_idx]["materialIndex"]
-            for slot_index, slot in enumerate(meta_data["materials"]["slots"]):
-                if slot["slotIndex"] == material_slot_index:
-                    material_slot_name = slot["value"]
-                    break
+            # Create vertex group collection
+            group_collection = create_collection(f"Vertex_Group_{group_idx}", lod_collection)
+            mesh = lod_meshes[group["submeshes"][0]["submesh_idx"]]
 
-            # Create Submesh Parent Empty
-            submesh_parent = create_empty_parent(
-                f"{material_slot_name}",
-                parent_obj=group_parent
+            # Read vertex data (FIXED: Pass vertex_buffer explicitly)
+            positions, uv_sets, uv_set_names, bone_indices, bone_weights= read_vertex_data(
+                vertex_reader, vertex_buffer, mesh, pos_min, pos_range, uv_decomp_xy, uv_decomp_zw
             )
 
             # --------------------------
-            # H. Process Each Draw Range in the Submesh
+            # Process submeshes (Level 3 Loop)
             # --------------------------
-            for range_idx, draw_range in enumerate(draw_ranges):
-                dc = draw_range["drawCall"]
-                idx_offset = dc["indexBufferStartIndex"] * 2  # 16-bit indices
-                idx_count = dc["indexCount"]
+            for submesh_data in group["submeshes"]:
+                submesh_idx = submesh_data["submesh_idx"]
+                mat_index = submesh_data["mat_index"]
+                draw_ranges = submesh_data["draw_ranges"]
 
-                if idx_count == 0:
-                    continue
+                # Get material name (DELEGATED TO FUNCTION)
+                material_slot_name = get_material_name(meta_data, lod_meshes, submesh_idx, mat_index)
 
-                # --------------------------
-                # I. Create BMesh (Reuse Shared Vertices)
-                # --------------------------
-                bm = bmesh.new()
-                # Add shared vertices ONCE (reused across all submeshes in the group)
-                bm_verts = [bm.verts.new(pos) for pos in positions]
-                bm.verts.ensure_lookup_table()
+                # Create submesh collection
+                submesh_collection = create_collection(material_slot_name, group_collection)
 
                 # --------------------------
-                # J. Read Indices & Create Faces
+                # Process draw ranges (Level 4 Loop)
                 # --------------------------
-                reset_reader(index_reader, index_buffer)
-                index_reader.seek(idx_offset)
+                for range_idx, draw_range in enumerate(draw_ranges):
+                    dc = draw_range["drawCall"]
+                    idx_offset = dc["indexBufferStartIndex"] * 2
+                    idx_count = dc["indexCount"]
 
-                try:
-                    if primitive_type.name == "TriangleList":
-                        # Triangle list: 3 indices per face
-                        for _ in range(idx_count // 3):
-                            a = index_reader.u16()
-                            b = index_reader.u16()
-                            c = index_reader.u16()
-                            if 0 <= a < len(bm_verts) and 0 <= b < len(bm_verts) and 0 <= c < len(bm_verts):
-                                bm.faces.new([bm_verts[a], bm_verts[b], bm_verts[c]])
+                    # Read indices (DELEGATED TO FUNCTION)
+                    indices_list = read_indices(
+                        index_reader, index_buffer, idx_offset, idx_count, primitive_type
+                    )
 
-                    elif primitive_type.name == "TriangleStrip":
-                        # Triangle strip: convert to triangle list
-                        indices = [index_reader.u16() for _ in range(idx_count)]
-                        for i in range(2, len(indices)):
-                            if i % 2 == 0:
-                                a, b, c = indices[i - 2], indices[i - 1], indices[i]
-                            else:
-                                a, b, c = indices[i - 1], indices[i - 2], indices[i]
-                            if 0 <= a < len(bm_verts) and 0 <= b < len(bm_verts) and 0 <= c < len(bm_verts):
-                                bm.faces.new([bm_verts[a], bm_verts[b], bm_verts[c]])
+                    # Create mesh object (DELEGATED TO FUNCTION)
+                    skin_name = lod_meshes[submesh_idx]["ranges"][range_idx]["name"]["value"]
+                    mesh_obj = create_mesh_object(
+                        positions, lod_meshes[submesh_idx], meta_data, indices_list, uv_sets, uv_set_names, skin_name, bone_indices, bone_weights
+                    )
 
-                    bm = prune_unused_vertices(bm)
+                    # Link to collection
+                    if mesh_obj.name in bpy.context.scene.collection.objects:
+                        bpy.context.scene.collection.objects.unlink(mesh_obj)
+                    submesh_collection.objects.link(mesh_obj)
 
-                except Exception as e:
-                    print(f"LOD {lod_index} Group {group_idx} Range {range_idx}: Error - {e}")
-                    bm.free()
-                    continue
+                    # Add custom properties
+                    # mesh_obj["lod_index"] = lod_index
+                    # mesh_obj["vertex_group_idx"] = group_idx
+                    # mesh_obj["submesh_idx"] = submesh_idx
+                    # mesh_obj["material_index"] = mat_index
+                    # mesh_obj["skin_index"] = draw_range["skinIndex"]
+                    # mesh_obj["original_vertex_count"] = len(positions)
+                    # mesh_obj["used_vertex_count"] = len(used_indices)
+                    # if lod_index < len(lod_distances):
+                        # mesh_obj["lod_switch_distance"] = lod_distances[lod_index]
 
-                # --------------------------
-                # K. Create Blender Mesh Object
-                # --------------------------
-                skin_name = lod_meshes[submesh_idx]["ranges"][range_idx]["name"]["value"]
-                mesh_name = f"{skin_name}"
-                mesh_data = bpy.data.meshes.new(mesh_name)
-                bm.to_mesh(mesh_data)
-                bm.free()
+                    # Print progress
+                    print(
+                        f"LOD {lod_index} Range {range_idx}: Pruned {len(positions) - len(indices_list)} unused vertices")
+                    global_submesh_id += 1
 
-                # Link to scene and parent to submesh empty
-                mesh_obj = bpy.data.objects.new(mesh_name, mesh_data)
-                bpy.context.collection.objects.link(mesh_obj)
-                mesh_obj.parent = submesh_parent
+    # Final output
+    print(f"\n✅ Import Complete!")
+    print(f"- Total submeshes created: {global_submesh_id}")
+    print(f"- Root collection: {root_collection.name}")
 
-                # Add custom properties
-                mesh_obj["lod_index"] = lod_index
-                mesh_obj["vertex_group_idx"] = group_idx
-                mesh_obj["submesh_idx"] = submesh_idx
-                mesh_obj["material_index"] = mat_index
-                mesh_obj["skin_index"] = draw_range["skinIndex"]
-                if lod_index < len(lod_distances):
-                    mesh_obj["lod_switch_distance"] = lod_distances[lod_index]
-
-                global_submesh_id += 1
 
 # --------------------------
-# Final Output
+# Run the Import
 # --------------------------
-print(f"\n✅ Import Complete!")
-print(f"- Total submeshes created: {global_submesh_id}")
-print(f"- Root object: {root_empty.name}")
-print(f"- Toggle LOD visibility in the Outliner (eye icon)")
+if __name__ == "__main__":
+    XBG_PATH = r"D:\Steam\steamapps\common\Watch_Dogs\data_win64\worlds\windy_city\windy_city_unpack\graphics\characters\char\char01\char01.xbg"
+    import_xbg(XBG_PATH)
