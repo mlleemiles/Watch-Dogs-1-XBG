@@ -50,6 +50,30 @@ def full_cleanup():
             bpy.data.collections.remove(col)
 
 
+def precompute_bone_mapping(xbg_data):
+    """Precompute bone index mapping to avoid repeated lookups (MAJOR OPTIMIZATION)"""
+    bone_mapping = []
+    if not xbg_data.get("skeletons") or not xbg_data["skeletons"].get("skeletons"):
+        return bone_mapping
+
+    skeleton = xbg_data["skeletons"]["skeletons"][0]
+    if len(xbg_data["bonePalettes"]) > 0:
+        for _ in range(len(xbg_data["bonePalettes"])):
+            bone_map_reorder = {}
+            for bone_id, bone_data in enumerate(skeleton):
+                matrix_index = bone_data["matrixIndex"]
+                bone_map_reorder[matrix_index] = bone_id
+
+            bone_mapping.append(bone_map_reorder)
+    else:
+        bone_map_reorder = {}
+        for bone_id, bone_data in enumerate(skeleton):
+            matrix_index = bone_data["matrixIndex"]
+            bone_map_reorder[matrix_index] = bone_id
+
+    return bone_mapping
+
+
 def read_vertex_data(vertex_reader, vertex_buffer, mesh, pos_min, pos_range, uv_decomp_xy, uv_decomp_zw):
     """Read vertex positions and UVs (single-purpose function) - FIXED: Pass vertex_buffer explicitly"""
 
@@ -155,7 +179,7 @@ def read_indices(index_reader, index_buffer, idx_offset, idx_count, primitive_ty
     return indices_list
 
 
-def create_mesh_object(positions, mesh, xbg, indices_list, uv_sets, uv_set_names, skin_name, bone_indices, bone_weights):
+def create_mesh_object(positions, mesh, xbg, bone_mapping, indices_list, uv_sets, uv_set_names, skin_name, bone_indices, bone_weights):
     """Create Blender mesh object (single-purpose function)"""
     # Create BMesh
     bm = bmesh.new()
@@ -198,20 +222,14 @@ def create_mesh_object(positions, mesh, xbg, indices_list, uv_sets, uv_set_names
                 if bone_weights[i][j] != 0.0:
                     if mesh["boneMapIndex"] == 0xFFFFFFFF:
                         boneIndex = bone_indices[i][j]
-                        for bone_id in range(len(xbg["skeletons"]["skeletons"][0])):
-                            if xbg["skeletons"]["skeletons"][0][bone_id]["matrixIndex"] == boneIndex:  # Compare IDs
-                                boneIndex = bone_id
-                                break
+                        boneIndex = bone_mapping[0][boneIndex]
                         vertex_group_name = xbg["skeletons"]["skeletons"][0][boneIndex]["name"]
                     else:
                         boneMap = xbg["bonePalettes"][mesh["boneMapIndex"]]
                         #print(f"Bone Map Index: {len(boneMap)} {mesh['boneMapIndex']} Bone Index: {bone_indices[i][j]} {i}")
                         #print(f"Mesh material: {mesh['materialIndex']}")
                         boneIndex = boneMap[bone_indices[i][j]]
-                        for bone_id in range(len(xbg["skeletons"]["skeletons"][0])):
-                            if xbg["skeletons"]["skeletons"][0][bone_id]["matrixIndex"] == boneIndex:  # Compare IDs
-                                boneIndex = bone_id
-                                break
+                        boneIndex = bone_mapping[mesh["boneMapIndex"]][boneIndex]
                         vertex_group_name = xbg["skeletons"]["skeletons"][0][boneIndex]["name"]
 
                     if vertex_group_name not in mesh_obj.vertex_groups:
@@ -262,6 +280,8 @@ def import_xbg(xbg_path):
     pos_range = meta_data["geomParams"]["meshDecompression"]["positionRange"]
     uv_decomp_xy = meta_data["geomParams"]["uvDecompression"]["UVDecompressionXY"]
     uv_decomp_zw = meta_data["geomParams"]["uvDecompression"]["UVDecompressionZW"]
+
+    bone_mapping = precompute_bone_mapping(meta_data)
 
     # Print basic info
     print(f"=== XBG Import ===")
@@ -370,7 +390,7 @@ def import_xbg(xbg_path):
                     # Create mesh object (DELEGATED TO FUNCTION)
                     skin_name = lod_meshes[submesh_idx]["ranges"][range_idx]["name"]["value"]
                     mesh_obj = create_mesh_object(
-                        positions, lod_meshes[submesh_idx], meta_data, indices_list, uv_sets, uv_set_names, skin_name, bone_indices, bone_weights
+                        positions, lod_meshes[submesh_idx], meta_data, bone_mapping, indices_list, uv_sets, uv_set_names, skin_name, bone_indices, bone_weights
                     )
 
                     # Link to collection
