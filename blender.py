@@ -70,6 +70,7 @@ def precompute_bone_mapping(xbg_data):
         for bone_id, bone_data in enumerate(skeleton):
             matrix_index = bone_data["matrixIndex"]
             bone_map_reorder[matrix_index] = bone_id
+        bone_mapping.append(bone_map_reorder)
 
     return bone_mapping
 
