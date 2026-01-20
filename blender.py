@@ -1,7 +1,9 @@
+import math
 import sys
 import bpy
 import bmesh
 import os
+import mathutils
 
 # Add XBG parser path
 sys.path.append(r"C:\Users\mllee\PycharmProjects\XBG_Deserialize")
@@ -85,19 +87,32 @@ def read_vertex_data(vertex_reader, vertex_buffer, mesh, pos_min, pos_range, uv_
     vertex_reader.seek(vertex_offset)
 
     positions = []
+    position_extra = []
     uv0 = []
     uv1 = []
     bone_indices = []
     bone_weights = []
+    normal = []
+    normal_modified = []
+    color = []
 
     for _ in range(vertex_count):
         read_bytes = 0
         # Read position (skip w component)
+
+        if mesh["Point"]:
+            x = vertex_reader.f32()
+            y = vertex_reader.f32()
+            z = vertex_reader.f32()
+            w = vertex_reader.f32()
+            positions.append((x, y, z))
+            read_bytes += 16
+
         if mesh["PointComp"]:
             x = vertex_reader.i16() * pos_range + pos_min
             y = vertex_reader.i16() * pos_range + pos_min
             z = vertex_reader.i16() * pos_range + pos_min
-            vertex_reader.i16()  # Skip w
+            w = vertex_reader.i16()
             positions.append((x, y, z))
             read_bytes += 8
 
@@ -116,6 +131,9 @@ def read_vertex_data(vertex_reader, vertex_buffer, mesh, pos_min, pos_range, uv_
             uv1_v = (-vertex_reader.i16() * uv_decomp_zw + uv_decomp_xy) % 1.0
             uv1.append((uv1_u, uv1_v))
             read_bytes += 4
+
+        # There is no UV2 in WD1
+        # if mesh["UVComp3"]:
 
         if mesh["Skin"]:
             w0 = vertex_reader.u8() / 255.0
@@ -141,7 +159,72 @@ def read_vertex_data(vertex_reader, vertex_buffer, mesh, pos_min, pos_range, uv_
                 bone_indices.append((b0, b1, b2, b3))
                 bone_weights.append((w0, w1, w2, w3))
 
+        if mesh["SkinRigid"]:
+            w0 = 1.0
+            if mesh["BinormalComp"]:
+                b0 = int(math.floor(w / 256.0))
+            else:
+                b0 = w
+            bone_indices.append((b0, 0, 0, 0))
+            bone_weights.append((w0, 0.0, 0.0, 0.0))
+
+        if mesh["NormalComp"]:
+            n0 = vertex_reader.u8() / 255.0
+            n1 = vertex_reader.u8() / 255.0
+            n2 = vertex_reader.u8() / 255.0
+            n3 = vertex_reader.u8() / 255.0 #alpha
+
+            n0 = n0 * 2.0 - 1.0
+            n1 = n1 * 2.0 - 1.0
+            n2 = n2 * 2.0 - 1.0
+
+            normalizer = math.sqrt(n0*n0 + n1*n1 + n2*n2)
+            
+            normal.append((n2 / normalizer, n1 / normalizer, n0 / normalizer))
+            read_bytes += 4
+
+        if mesh["Color"]:
+            c0 = vertex_reader.u8() / 255.0
+            c1 = vertex_reader.u8() / 255.0
+            c2 = vertex_reader.u8() / 255.0
+            c3 = vertex_reader.u8() / 255.0  # alpha
+
+            color.append((c2, c1, c0, c3))
+            read_bytes += 4
+
+        #not used for blender, but alpha is used for some stuff
+        if mesh["TangentComp"]:
+            n0 = vertex_reader.u8() / 255.0
+            n1 = vertex_reader.u8() / 255.0
+            n2 = vertex_reader.u8() / 255.0
+            n3 = vertex_reader.u8() / 255.0 #alpha
+            read_bytes += 4
+
+        #not used for blender, but alpha is used for some stuff
+        if mesh["BinormalComp"]:
+            n0 = vertex_reader.u8() / 255.0
+            n1 = vertex_reader.u8() / 255.0
+            n2 = vertex_reader.u8() / 255.0
+            n3 = vertex_reader.u8() / 255.0 #alpha
+            read_bytes += 4
+
+        if mesh["NormalModifiedComp"]:
+            n0 = vertex_reader.u8() / 255.0
+            n1 = vertex_reader.u8() / 255.0
+            n2 = vertex_reader.u8() / 255.0
+            n3 = vertex_reader.u8() / 255.0  # alpha
+
+            n0 = n0 * 2.0 - 1.0
+            n1 = n1 * 2.0 - 1.0
+            n2 = n2 * 2.0 - 1.0
+
+            normalizer = math.sqrt(n0 * n0 + n1 * n1 + n2 * n2)
+
+            normal_modified.append((n2 / normalizer, n1 / normalizer, n0 / normalizer))
+            read_bytes += 4
+
         vertex_reader.skip(vertex_size - read_bytes)
+
 
     # Prepare UV sets for return
     uv_sets = []
@@ -153,7 +236,7 @@ def read_vertex_data(vertex_reader, vertex_buffer, mesh, pos_min, pos_range, uv_
         uv_sets.append(uv1)
         uv_set_names.append("uv1")
 
-    return positions, uv_sets, uv_set_names, bone_indices, bone_weights
+    return positions, uv_sets, uv_set_names, bone_indices, bone_weights, normal, normal_modified, color
 
 
 def read_indices(index_reader, index_buffer, idx_offset, idx_count, primitive_type):
@@ -162,11 +245,13 @@ def read_indices(index_reader, index_buffer, idx_offset, idx_count, primitive_ty
     index_reader.seek(idx_offset)
 
     indices_list = []
+    used_indices = set()
 
     if primitive_type.name == "TriangleList":
         for _ in range(idx_count // 3):
             a, b, c = index_reader.u16(), index_reader.u16(), index_reader.u16()
-            indices_list.append((a, b, c))
+            used_indices.update([c, b, a])
+            indices_list.append((c, b, a))
     elif primitive_type.name == "TriangleStrip":
         indices = [index_reader.u16() for _ in range(idx_count)]
         for i in range(2, len(indices)):
@@ -176,11 +261,12 @@ def read_indices(index_reader, index_buffer, idx_offset, idx_count, primitive_ty
                 a, b, c = indices[i - 1], indices[i - 2], indices[i]
             indices_list.append((a, b, c))
 
-    return indices_list
+    return indices_list, used_indices
 
 
-def create_mesh_object(positions, mesh, xbg, bone_mapping, indices_list, uv_sets, uv_set_names, skin_name, bone_indices, bone_weights):
+def create_mesh_object(positions, mesh, xbg, bone_mapping, indices_list, used_indices, uv_sets, uv_set_names, skin_name, bone_indices, bone_weights, normal, normal_modified, color):
     """Create Blender mesh object (single-purpose function)"""
+    """
     # Create BMesh
     bm = bmesh.new()
 
@@ -188,6 +274,7 @@ def create_mesh_object(positions, mesh, xbg, bone_mapping, indices_list, uv_sets
     uv_layers = [bm.loops.layers.uv.new(name) for name in uv_set_names]
 
     # Create vertices
+    # it's horrible blender forced me to do this
     bm_verts = [bm.verts.new(pos) for pos in positions]
     bm.verts.ensure_lookup_table()
 
@@ -212,11 +299,55 @@ def create_mesh_object(positions, mesh, xbg, bone_mapping, indices_list, uv_sets
     bm.free()
 
     mesh_obj = bpy.data.objects.new(skin_name, mesh_data)
+    """
 
-    if mesh["Skin"]:
+    mesh_data = bpy.data.meshes.new(skin_name)
+    mesh_data.from_pydata(positions, [], indices_list)
+    mesh_data.update()
+
+    mesh_obj = bpy.data.objects.new(skin_name, mesh_data)
+
+    for uv_set_idx, name in enumerate(uv_set_names):
+        uv_layer = mesh_data.uv_layers.new(name=name)
+        for poly in mesh_data.polygons:
+            for loop_idx in poly.loop_indices:
+                vert_idx = mesh_data.loops[loop_idx].vertex_index
+                uv_layer.data[loop_idx].uv = uv_sets[uv_set_idx][vert_idx]
+    """
+    loop_normal = [None] * len(mesh_data.loops)
+    for poly in mesh_data.polygons:
+        for loop_idx in poly.loop_indices:
+            vert_idx = mesh_data.loops[loop_idx].vertex_index
+            loop_normal[loop_idx] = normal[vert_idx]
+    """
+    mesh_obj.data.polygons.foreach_set("use_smooth", [True] * len(mesh_obj.data.polygons))
+    mesh_obj.data.normals_split_custom_set_from_vertices(normal)
+    #mesh_obj.data.loops.foreach_set("normal", loop_normal)
+    #mesh_obj.data.vertex_normals.foreach_set("vector", normal)
+
+    if mesh["NormalModifiedComp"]:
+        normal_layer_name = 'normal_modified'
+        if normal_layer_name not in  mesh_obj.data.attributes:
+            normal_attr = mesh_obj.data.attributes.new(
+                name=normal_layer_name,
+                type='FLOAT_VECTOR',
+                domain='CORNER'
+            )
+        else:
+            normal_attr = mesh_obj.data.attributes[normal_layer_name]
+
+        for poly in mesh_data.polygons:
+            for loop_idx in poly.loop_indices:
+                vert_idx = mesh_data.loops[loop_idx].vertex_index
+                normal_attr.data[loop_idx].vector = normal_modified[vert_idx]
+
+    mesh_obj.data.update()
+
+    if mesh["Skin"] or mesh["SkinRigid"]:
         bone_count = 4
         if mesh["SkinExtra"]:
             bone_count = 6
+
         for i in range(mesh["mergedRanges"]["minIndexValue"], mesh["mergedRanges"]["maxIndexValue"] + 1):
             for j in range(bone_count):
                 if bone_weights[i][j] != 0.0:
@@ -239,6 +370,19 @@ def create_mesh_object(positions, mesh, xbg, bone_mapping, indices_list, uv_sets
 
                     mesh_obj.vertex_groups[vertex_group_name].add([i], bone_weights[i][j], 'ADD')
 
+    if mesh["Color"]:
+        color_layer_name = 'color'
+        if color_layer_name not in mesh_data.color_attributes:
+            color_attr = mesh_data.color_attributes.new(
+                name=color_layer_name,
+                type='FLOAT_COLOR',
+                domain='POINT'
+            )
+        else:
+            color_attr = mesh_data.color_attributes[color_layer_name]
+
+        for i in range(len(positions)):
+            color_attr.data[i].color = color[i]
 
     #bm.free()
     bm = bmesh.new()
@@ -357,7 +501,7 @@ def import_xbg(xbg_path):
             mesh = lod_meshes[group["submeshes"][0]["submesh_idx"]]
 
             # Read vertex data (FIXED: Pass vertex_buffer explicitly)
-            positions, uv_sets, uv_set_names, bone_indices, bone_weights= read_vertex_data(
+            positions, uv_sets, uv_set_names, bone_indices, bone_weights, normal, normal_modified, color= read_vertex_data(
                 vertex_reader, vertex_buffer, mesh, pos_min, pos_range, uv_decomp_xy, uv_decomp_zw
             )
 
@@ -384,14 +528,14 @@ def import_xbg(xbg_path):
                     idx_count = dc["indexCount"]
 
                     # Read indices (DELEGATED TO FUNCTION)
-                    indices_list = read_indices(
+                    indices_list, used_indices = read_indices(
                         index_reader, index_buffer, idx_offset, idx_count, primitive_type
                     )
 
                     # Create mesh object (DELEGATED TO FUNCTION)
                     skin_name = lod_meshes[submesh_idx]["ranges"][range_idx]["name"]["value"]
                     mesh_obj = create_mesh_object(
-                        positions, lod_meshes[submesh_idx], meta_data, bone_mapping, indices_list, uv_sets, uv_set_names, skin_name, bone_indices, bone_weights
+                        positions, lod_meshes[submesh_idx], meta_data, bone_mapping, indices_list, used_indices, uv_sets, uv_set_names, skin_name, bone_indices, bone_weights, normal, normal_modified, color
                     )
 
                     # Link to collection
@@ -424,6 +568,6 @@ def import_xbg(xbg_path):
 # --------------------------
 # Run the Import
 # --------------------------
-if __name__ == "__main__":
-    XBG_PATH = r"D:\Steam\steamapps\common\Watch_Dogs\data_win64\worlds\windy_city\windy_city_unpack\graphics\characters\char\char01\char01.xbg"
-    import_xbg(XBG_PATH)
+
+XBG_PATH = r"D:\Steam\steamapps\common\Watch_Dogs\data_win64\worlds\windy_city\windy_city_unpack\graphics\vehicles_nexus\land\muscle\muscle_01\muscle_01.xbg"
+import_xbg(XBG_PATH)
