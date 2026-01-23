@@ -75,6 +75,100 @@ def precompute_bone_mapping(xbg_data):
 
     return bone_mapping
 
+def create_armature(xbg_data, parent_collection):
+    """
+    创建Blender Armature并导入骨骼数据（适配父骨骼本地空间的相对变换）
+    :param xbg_data: 解析后的XBG元数据
+    :param parent_collection: 父集合（骨架将被添加到这里）
+    :return: 创建的Armature对象
+    """
+    # 检查是否有骨架数据
+    if not xbg_data.get("skeletons") or not xbg_data["skeletons"].get("skeletons"):
+        print("⚠️ 没有找到骨架数据，跳过Armature创建")
+        return None
+
+    # 获取第一个骨架（通常只有一个）
+    skeleton_data = xbg_data["skeletons"]["skeletons"][0]
+    if not skeleton_data:
+        print("⚠️ 骨架数据为空，跳过Armature创建")
+        return None
+
+    # 1. 创建Armature数据和对象
+    armature_data = bpy.data.armatures.new(name="XBG_Armature")
+    armature_obj = bpy.data.objects.new(name="XBG_Armature", object_data=armature_data)
+
+    # 2. 将Armature链接到集合
+    parent_collection.objects.link(armature_obj)
+
+    # 3. 进入编辑模式创建骨骼
+    bpy.context.view_layer.objects.active = armature_obj
+    bpy.ops.object.mode_set(mode='EDIT')
+
+    # 存储创建的编辑模式骨骼（用于父子绑定）
+    edit_bones = {}
+
+    # 4. 遍历所有骨骼创建（按顺序，确保父骨骼先创建）
+    for bone_idx, bone_info in enumerate(skeleton_data):
+        # 获取骨骼基础信息
+        bone_name = bone_info["name"] if bone_info["name"] else f"Bone_{bone_idx}"
+        parent_idx = bone_info["parent"]
+        local_pos = bone_info["position"]  # 相对于父骨骼本地空间的位置
+        local_rot = bone_info["rotation"]  # [x,y,z,w] 四元数（相对于父骨骼本地空间的旋转）
+
+        # 5. 创建编辑模式骨骼
+        edit_bone = armature_data.edit_bones.new(bone_name)
+
+        # 6. 基础设置：骨骼长度（避免零长度）
+        edit_bone.tail = edit_bone.head + mathutils.Vector((0.0, 0.1, 0.0))
+
+        # 7. 构建子骨骼的本地变换矩阵（相对父骨骼）
+        # 7.1 转换XBG四元数到Blender格式 (w,x,y,z)
+        bone_rot_quat = mathutils.Quaternion((
+            local_rot[3],  # w
+            local_rot[0],  # x
+            local_rot[1],  # y
+            local_rot[2]  # z
+        ))
+
+        # 7.2 转换XBG本地位置到Blender向量
+        local_pos_vec = mathutils.Vector((local_pos[0], local_pos[1], local_pos[2]))
+
+        # 7.3 创建子骨骼的本地变换矩阵（位置 + 旋转）
+        local_transform = mathutils.Matrix.Translation(local_pos_vec) @ bone_rot_quat.to_matrix().to_4x4()
+
+        # 8. 处理父子关系（核心：基于父骨骼本地空间计算最终矩阵）
+        if parent_idx != 0xFFFF and parent_idx in edit_bones:
+            # 8.1 获取父骨骼
+            parent_bone = edit_bones[parent_idx]
+
+            # 8.2 设置父子关系
+            edit_bone.parent = parent_bone
+
+            # 8.3 子骨骼的最终矩阵 = 父骨骼的本地矩阵 × 子骨骼的本地变换矩阵
+            # （子骨骼的位置/旋转完全基于父骨骼的本地空间）
+            edit_bone.matrix = parent_bone.matrix @ local_transform
+        else:
+            # 根骨骼：直接使用本地变换矩阵（相对于世界空间）
+            edit_bone.matrix = local_transform
+
+        # 9. 存储编辑骨骼引用
+        edit_bones[bone_idx] = edit_bone
+
+    # 10. 退出编辑模式，进入姿势模式
+    print(f"{edit_bones[9].name}: {edit_bones[9].matrix}")
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    # 11. （可选）验证：设置姿势模式骨骼的旋转（确保动画兼容）
+    for bone_idx, bone_info in enumerate(skeleton_data):
+        bone_name = bone_info["name"] if bone_info["name"] else f"Bone_{bone_idx}"
+        if bone_name in armature_obj.pose.bones:
+            pose_bone = armature_obj.pose.bones[bone_name]
+            # 重置姿势模式旋转（编辑模式已处理好相对变换，这里仅清零避免冲突）
+            pose_bone.rotation_quaternion = mathutils.Quaternion((1.0, 0.0, 0.0, 0.0))
+
+    print(f"✅ 成功创建Armature，共导入 {len(skeleton_data)} 个骨骼")
+    return armature_obj
+
 
 def read_vertex_data(vertex_reader, vertex_buffer, mesh, pos_min, pos_range, uv_decomp_xy, uv_decomp_zw):
     """Read vertex positions and UVs (single-purpose function) - FIXED: Pass vertex_buffer explicitly"""
@@ -441,6 +535,8 @@ def import_xbg(xbg_path):
     # Create root collection
     root_collection = create_collection(xbg_name)
 
+    armature_obj = create_armature(meta_data, root_collection)
+
     # Track progress
     global_submesh_id = 0
 
@@ -569,5 +665,5 @@ def import_xbg(xbg_path):
 # Run the Import
 # --------------------------
 
-XBG_PATH = r"D:\Steam\steamapps\common\Watch_Dogs\data_win64\worlds\windy_city\windy_city_unpack\graphics\vehicles_nexus\land\muscle\muscle_01\muscle_01.xbg"
+XBG_PATH = r"D:\Steam\steamapps\common\Watch_Dogs\data_win64\worlds\windy_city\windy_city_unpack\graphics\characters\char\char01\char01.xbg"
 import_xbg(XBG_PATH)
